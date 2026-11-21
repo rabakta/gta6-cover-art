@@ -15,10 +15,11 @@ const SAMPLES = {
 };
 
 const state = {
-  layout: 'hero2',
+  layout: 'poster',
   panels: [],
   title: 'Sunset Heist',
   subtitle: 'VICE CITY • 2026',
+  header: 'VICE COVER STUDIO PRESENTS',
   titleSize: 1,
   titlePos: 'bottom',
   titleColor: '#ffffff',
@@ -40,6 +41,21 @@ function resizePanels(layout) {
 }
 
 resizePanels(state.layout);
+
+// Varied framings for the poster's 7 panels, so reusing the two samples still
+// reads as different shots: each panel crops a different part of its photo.
+// Faces sit in the upper part of both samples, so oy stays positive (showing
+// the top of the photo) and ox leans toward each face: pier's face is
+// upper-left, boulevard's upper-right.
+const POSTER_CROPS = [
+  { zoom: 1.5, ox: 0.3, oy: 0.6 },
+  { zoom: 1.4, ox: -0.3, oy: 0.6 },
+  { zoom: 1.6, ox: 0.4, oy: 0.5 },
+  { zoom: 1.3, ox: -0.2, oy: 0.3 },
+  { zoom: 1.5, ox: 0.2, oy: 0.7 },
+  { zoom: 1.6, ox: -0.4, oy: 0.6 },
+  { zoom: 1.2, ox: 0.2, oy: 0.4 },
+];
 
 /** Loads an image from a URL, resolving once it can be drawn. */
 export function loadImage(url) {
@@ -188,6 +204,10 @@ document.getElementById('title').addEventListener('input', (e) => {
 });
 document.getElementById('subtitle').addEventListener('input', (e) => {
   state.subtitle = e.target.value;
+  render();
+});
+document.getElementById('header').addEventListener('input', (e) => {
+  state.header = e.target.value;
   render();
 });
 document.getElementById('title-size').addEventListener('input', (e) => {
@@ -353,6 +373,10 @@ async function init() {
         state.subtitle = scene.subtitle;
         document.getElementById('subtitle').value = scene.subtitle;
       }
+      if (scene.header !== undefined) {
+        state.header = scene.header;
+        document.getElementById('header').value = scene.header;
+      }
       // Fill the panels with the scene's photos, in order.
       for (let i = 0; i < scene.photos.length && i < state.panels.length; i++) {
         const key = scene.photos[i];
@@ -364,9 +388,10 @@ async function init() {
           panel.img = img;
           panel.src = sample.src;
           panel.name = sample.name;
-          panel.zoom = scene.zoom ?? 1;
-          panel.ox = scene.ox ?? 0;
-          panel.oy = scene.oy ?? 0;
+          const crop = state.layout === 'poster' ? POSTER_CROPS[i] : null;
+          panel.zoom = scene.zoom ?? (crop ? crop.zoom : 1);
+          panel.ox = scene.ox ?? (crop ? crop.ox : 0);
+          panel.oy = scene.oy ?? (crop ? crop.oy : 0);
         } catch { /* panel stays empty */ }
       }
       state.selected = -1;
@@ -375,7 +400,10 @@ async function init() {
     return;
   }
   // Default scene: a full cover from the two samples, so the app opens ready.
-  const defaults = ['pier', 'boulevard', 'pier'];
+  // The poster reuses them across its 7 panels with different crops.
+  const defaults = state.layout === 'poster'
+    ? ['pier', 'boulevard', 'pier', 'boulevard', 'pier', 'boulevard', 'pier']
+    : ['pier', 'boulevard', 'pier'];
   for (let i = 0; i < defaults.length && i < state.panels.length; i++) {
     const sample = SAMPLES[defaults[i]];
     try {
@@ -384,6 +412,7 @@ async function init() {
       panel.img = img;
       panel.src = sample.src;
       panel.name = sample.name;
+      if (state.layout === 'poster' && POSTER_CROPS[i]) Object.assign(panel, POSTER_CROPS[i]);
     } catch { /* panel stays empty */ }
   }
   render();
