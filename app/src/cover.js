@@ -107,15 +107,31 @@ export const GRADES = {
 // ------------------------------------------------------------------ helpers
 // Face-aware crops: every character in the built-in cast was drawn with its
 // face in the upper third of the frame, so the default crop anchors to the
-// face region (ox 0.5, oy 0.28) instead of the image centre. A panel's crop
+// face region (ox 0.5, oy 0.30) instead of the image centre. A panel's crop
 // starts on the face; the user can still pan/zoom freely, and double-click
 // reframes a panel back onto the face.
-export const FACE_ANCHOR = { ox: 0.5, oy: 0.28 };
+export const FACE_ANCHOR = { ox: 0.5, oy: 0.30 };
+
+// Per-asset head geometry (fractions of the image height), measured from the
+// cast art: HEAD_TOP is the top of the solid hair / hat mass (wispy tips may
+// sit a little higher), CHIN is the bottom of the jaw / beard. The renderer
+// pins the crop window to the hairline when the whole head fits, so no head
+// or hair is ever cut by a default crop; when a panel is too short to hold
+// the whole head it keeps the chin in frame instead. Anything unlisted
+// (user uploads) falls back to a small headroom and a mid chin.
+export const HEAD_TOP = [0.02, 0.07, 0.07, 0.05, 0.10, 0.07, 0.08, 0.10];
+export const CHIN = [0.42, 0.40, 0.45, 0.42, 0.47, 0.48, 0.42, 0.48];
 
 // Cover-fit draw of an image into a rect, with a focal point (ox, oy in
 // 0..1) and a zoom factor. Faces in the character art sit in the upper
-// portion, so the default focal point is the face anchor (0.5, 0.28).
-function drawImageCover(ctx, img, dx, dy, dw, dh, ox, oy, zoom) {
+// portion, so the default focal point is the face anchor (0.5, 0.30).
+// headTop / chin are the asset's hairline and jaw (fractions of the image
+// height). At the default crop (zoom <= 1.2) the window is pinned so the
+// whole head stays in frame: when the head fits, the window starts at the
+// hairline; when the panel is too short for the whole head, the chin is
+// kept in frame and the hairline bleeds instead. Past 1.2x the user's
+// focal point wins, so zooming into a face is never fought by the pin.
+function drawImageCover(ctx, img, dx, dy, dw, dh, ox, oy, zoom, headTop, chin) {
   const iw = img.naturalWidth, ih = img.naturalHeight;
   if (!iw || !ih) return;
   const base = Math.max(dw / iw, dh / ih);
@@ -124,6 +140,11 @@ function drawImageCover(ctx, img, dx, dy, dw, dh, ox, oy, zoom) {
   let sx = ox * iw - sw / 2, sy = oy * ih - sh / 2;
   sx = Math.max(0, Math.min(iw - sw, sx));
   sy = Math.max(0, Math.min(ih - sh, sy));
+  if ((zoom || 1) <= 1.2 && headTop !== undefined && chin !== undefined) {
+    if (headTop * ih + sh >= chin * ih) sy = Math.min(sy, headTop * ih);
+    else sy = Math.max(sy, chin * ih - sh);
+    sy = Math.max(0, Math.min(ih - sh, sy));
+  }
   ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
@@ -319,7 +340,7 @@ function drawPanels(ctx, W, H, layout, images, panels) {
     ctx.beginPath();
     ctx.rect(r.x, r.y, r.w, r.h);
     ctx.clip();
-    if (img) drawImageCover(ctx, img, r.x, r.y, r.w, r.h, p.ox ?? 0.5, p.oy ?? 0.3, p.zoom ?? 1);
+    if (img) drawImageCover(ctx, img, r.x, r.y, r.w, r.h, p.ox ?? 0.5, p.oy ?? 0.3, p.zoom ?? 1, HEAD_TOP[p.img] ?? 0.05, CHIN[p.img] ?? 0.45);
     else { ctx.fillStyle = '#2b1838'; ctx.fillRect(r.x, r.y, r.w, r.h); }
     ctx.restore();
   }

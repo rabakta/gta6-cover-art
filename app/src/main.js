@@ -55,15 +55,16 @@ async function loadAssets() {
 // different heights (char-5's tall ponytail puts her face lower), so each
 // asset records its own face height. defaultPanels and reframeToFace use
 // these; anything unlisted falls back to FACE_ANCHOR.
-const FACE_OY = [0.28, 0.28, 0.28, 0.28, 0.38, 0.32, 0.30, 0.30];
+const FACE_OY = [0.30, 0.30, 0.32, 0.32, 0.38, 0.32, 0.30, 0.30];
 function faceOy(imgIdx) {
   return Number.isInteger(imgIdx) && FACE_OY[imgIdx] !== undefined ? FACE_OY[imgIdx] : FACE_ANCHOR.oy;
 }
 
 // Default panels for a layout: cycle through the cast, each crop anchored
 // to that asset's face (faceOy) so no face is ever cut by default. The hero
-// panel is a close-up (zoomed to the face); supporting panels vary their
-// zoom slightly so a repeated character still reads differently.
+// is a close-up but stays loose enough (1.1x) that the whole head — hair
+// included — is in frame; supporting panels sit at 1.0x, the widest the
+// cover-fit allows, so the renderer can keep the full head in frame.
 function defaultPanels(layout) {
   const n = panelCount(layout);
   const { hero } = layoutRects(layout, 100, 100);
@@ -74,7 +75,7 @@ function defaultPanels(layout) {
       img,
       ox: FACE_ANCHOR.ox,
       oy: faceOy(img),
-      zoom: i === hero ? 1.5 : 1 + (i % 3) * 0.08,
+      zoom: i === hero ? 1.1 : 1,
     });
   }
   return panels;
@@ -87,7 +88,7 @@ function reframeToFace(i) {
   const { hero } = layoutRects(state.layout, canvas.width, canvas.height);
   p.ox = FACE_ANCHOR.ox;
   p.oy = faceOy(p.img);
-  p.zoom = i === hero ? 1.5 : 1;
+  p.zoom = i === hero ? 1.1 : 1;
   render();
   buildPanelList();
 }
@@ -99,6 +100,8 @@ function applyAssetParam() {
   idxs.forEach((a, i) => {
     if (state.panels[i] && Number.isInteger(a) && a >= 0 && a < state.images.length) {
       state.panels[i].img = a;
+      // A new character brings its own face anchor.
+      state.panels[i].oy = faceOy(a);
     }
   });
 }
@@ -143,7 +146,14 @@ function buildCast() {
     t.title = t.alt;
     t.addEventListener('click', () => {
       const p = state.panels[state.selected];
-      if (p) { p.img = i; render(); buildPanelList(); }
+      if (p) {
+        p.img = i;
+        // A new character brings its own face anchor and default framing.
+        p.oy = faceOy(i);
+        const { hero } = layoutRects(state.layout, 100, 100);
+        p.zoom = state.selected === hero ? 1.1 : 1;
+        render(); buildPanelList();
+      }
       cast.querySelectorAll('img').forEach((x) => x.classList.remove('sel'));
       t.classList.add('sel');
     });
