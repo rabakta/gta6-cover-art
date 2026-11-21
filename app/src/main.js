@@ -1,421 +1,356 @@
-// Wires the page: pick photos, arrange the multi-panel cover, edit the caption and
-// grade, export a PNG. A `?shot=` query sets up a fixed scene for a screenshot
-// instead (./shots.js). Photos stay on this machine: uploads use object URLs and
-// the samples are local files.
-import { drawCover, panelCount, layoutRects, hitPanel } from './cover.js';
-import { runShot } from './shots.js';
+// main.js — the editor. Loads the illustrated character assets, keeps the
+// editor state, wires the controls, and renders the preview canvas through
+// cover.js. The built-in cast is the app's own illustrated characters — no
+// real person's photo is used anywhere in the default cover. The user can
+// still add their own photos (upload / drag & drop): the bounty asks the app
+// to turn ANY photo into cover art, and uploads are that path.
+import { drawCover, layoutRects, panelCount, FACE_ANCHOR } from './cover.js';
 
-const canvas = document.getElementById('cover');
-const status = document.getElementById('status');
-const panelsEl = document.getElementById('panels');
+const ASSET_NAMES = [
+  'char-1.jpg', 'char-2.jpg', 'char-3.jpg', 'char-4.jpg',
+  'char-5.jpg', 'char-6.jpg', 'char-7.jpg', 'char-8.jpg',
+];
+const LAYOUT_NAMES = { hero: 'Hero Close-Up', single: 'Single', hero2: 'Hero + 2', grid: 'Grid 2×2' };
+const GRADE_NAMES = { sunset: 'Sunset', neon: 'Neon Night', golden: 'Golden Hour', midnight: 'Midnight', crimson: 'Crimson Dusk' };
+const EXPORT_SIZES = [[1080, 1080], [1080, 1350], [1920, 1080]];
 
-const SAMPLES = {
-  pier: { src: 'samples/pier.jpg', name: 'Pier' },
-  boulevard: { src: 'samples/boulevard.jpg', name: 'Boulevard' },
-};
+const $ = (id) => document.getElementById(id);
+const canvas = $('cover');
+const params = new URLSearchParams(location.search);
 
 const state = {
-  layout: 'poster',
-  panels: [],
-  title: 'Sunset Heist',
-  subtitle: 'VICE CITY • 2026',
-  header: 'VICE COVER STUDIO PRESENTS',
-  titleSize: 1,
-  titlePos: 'bottom',
-  titleColor: '#ffffff',
-  grade: 'sunset',
-  gradeStrength: 1,
-  exportSize: '1080x1080',
+  layout: params.get('layout') || 'hero',
+  grade: params.get('grade') || 'sunset',
+  gradeStrength: Number(params.get('gradeStrength') || 70) / 100,
+  title: params.get('title') || 'SUNSET HEIST',
+  subtitle: params.get('subtitle') || 'VICE CITY • 2026',
+  header: params.get('header') || 'VICE COVER STUDIO PRESENTS',
+  titleScale: Number(params.get('titleSize') || 100) / 100,
+  images: [],      // HTMLImageElement per asset slot
+  names: [],       // display name per asset slot
+  panels: [],      // { img, ox, oy, zoom } per layout panel
   selected: 0,
 };
 
-function emptyPanel() {
-  return { img: null, src: '', name: 'Empty', zoom: 1, ox: 0, oy: 0, objectURL: null };
-}
-
-function resizePanels(layout) {
-  const n = panelCount(layout);
-  while (state.panels.length < n) state.panels.push(emptyPanel());
-  state.panels.length = n;
-  if (state.selected >= n) state.selected = 0;
-}
-
-resizePanels(state.layout);
-
-// Varied framings for the poster's 7 panels, so reusing the two samples still
-// reads as different shots: each panel crops a different part of its photo.
-// Faces sit in the upper part of both samples, so oy stays positive (showing
-// the top of the photo) and ox leans toward each face: pier's face is
-// upper-left, boulevard's upper-right.
-const POSTER_CROPS = [
-  { zoom: 1.5, ox: 0.3, oy: 0.6 },
-  { zoom: 1.4, ox: -0.3, oy: 0.6 },
-  { zoom: 1.6, ox: 0.4, oy: 0.5 },
-  { zoom: 1.3, ox: -0.2, oy: 0.3 },
-  { zoom: 1.5, ox: 0.2, oy: 0.7 },
-  { zoom: 1.6, ox: -0.4, oy: 0.6 },
-  { zoom: 1.2, ox: 0.2, oy: 0.4 },
-];
-
-/** Loads an image from a URL, resolving once it can be drawn. */
-export function loadImage(url) {
+function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
+    img.onerror = () => reject(new Error('load failed: ' + src));
+    img.src = src;
+  });
+}
+
+async function loadAssets() {
+  for (const name of ASSET_NAMES) {
+    try {
+      const img = await loadImage('assets/' + name);
+      state.images.push(img);
+      state.names.push(name.replace(/\.jpg$/, ''));
+    } catch (e) { /* asset not present yet — skip */ }
+  }
+}
+
+// Per-asset face anchors (oy): the cast was drawn with faces at slightly
+// different heights (char-5's tall ponytail puts her face lower), so each
+// asset records its own face height. defaultPanels and reframeToFace use
+// these; anything unlisted falls back to FACE_ANCHOR.
+const FACE_OY = [0.28, 0.28, 0.28, 0.28, 0.38, 0.32, 0.30, 0.30];
+function faceOy(imgIdx) {
+  return Number.isInteger(imgIdx) && FACE_OY[imgIdx] !== undefined ? FACE_OY[imgIdx] : FACE_ANCHOR.oy;
+}
+
+// Default panels for a layout: cycle through the cast, each crop anchored
+// to that asset's face (faceOy) so no face is ever cut by default. The hero
+// panel is a close-up (zoomed to the face); supporting panels vary their
+// zoom slightly so a repeated character still reads differently.
+function defaultPanels(layout) {
+  const n = panelCount(layout);
+  const { hero } = layoutRects(layout, 100, 100);
+  const panels = [];
+  for (let i = 0; i < n; i++) {
+    const img = state.images.length ? i % state.images.length : -1;
+    panels.push({
+      img,
+      ox: FACE_ANCHOR.ox,
+      oy: faceOy(img),
+      zoom: i === hero ? 1.5 : 1 + (i % 3) * 0.08,
+    });
+  }
+  return panels;
+}
+
+// Reframe one panel's crop back onto the face (double-click on the canvas).
+function reframeToFace(i) {
+  const p = state.panels[i];
+  if (!p) return;
+  const { hero } = layoutRects(state.layout, canvas.width, canvas.height);
+  p.ox = FACE_ANCHOR.ox;
+  p.oy = faceOy(p.img);
+  p.zoom = i === hero ? 1.5 : 1;
+  render();
+  buildPanelList();
+}
+
+function applyAssetParam() {
+  const raw = params.get('assets');
+  if (!raw) return;
+  const idxs = raw.split(',').map((s) => Number(s.trim()));
+  idxs.forEach((a, i) => {
+    if (state.panels[i] && Number.isInteger(a) && a >= 0 && a < state.images.length) {
+      state.panels[i].img = a;
+    }
   });
 }
 
 function render() {
-  drawCover(canvas, state, { hints: true });
-  renderPanelList();
+  drawCover(canvas, {
+    images: state.images,
+    panels: state.panels,
+    layout: state.layout,
+    grade: state.grade,
+    gradeStrength: state.gradeStrength,
+    title: state.title,
+    subtitle: state.subtitle,
+    header: state.header,
+    titleScale: state.titleScale,
+  });
 }
 
-function renderPanelList() {
-  panelsEl.innerHTML = '';
-  state.panels.forEach((panel, i) => {
+// ------------------------------------------------------------------ controls
+function buildButtons(el, names, current, onPick) {
+  el.innerHTML = '';
+  for (const [key, label] of Object.entries(names)) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (key === current) b.classList.add('active');
+    b.addEventListener('click', () => {
+      onPick(key);
+      el.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+    });
+    el.appendChild(b);
+  }
+}
+
+function buildCast() {
+  const cast = $('cast');
+  cast.innerHTML = '';
+  state.images.forEach((img, i) => {
+    const t = document.createElement('img');
+    t.src = img.src;
+    t.alt = state.names[i] || ('asset ' + (i + 1));
+    t.title = t.alt;
+    t.addEventListener('click', () => {
+      const p = state.panels[state.selected];
+      if (p) { p.img = i; render(); buildPanelList(); }
+      cast.querySelectorAll('img').forEach((x) => x.classList.remove('sel'));
+      t.classList.add('sel');
+    });
+    cast.appendChild(t);
+  });
+}
+
+function buildPanelList() {
+  const list = $('panelList');
+  list.innerHTML = '';
+  state.panels.forEach((p, i) => {
     const row = document.createElement('div');
-    row.className = 'panel-row' + (i === state.selected ? ' selected' : '');
-    row.addEventListener('click', () => {
-      state.selected = i;
-      render();
-    });
-    if (panel.img) {
-      const thumb = document.createElement('img');
-      thumb.src = panel.src;
-      thumb.alt = '';
-      row.appendChild(thumb);
-    } else {
-      const thumb = document.createElement('img');
-      thumb.alt = '';
-      thumb.style.background = 'linear-gradient(180deg,#3b1a5e,#c2337f 55%,#ff7a18)';
-      row.appendChild(thumb);
-    }
-    const name = document.createElement('div');
+    row.className = 'prow';
+    const thumb = document.createElement('img');
+    thumb.src = p.img >= 0 && state.images[p.img] ? state.images[p.img].src : '';
+    thumb.alt = '';
+    const name = document.createElement('span');
     name.className = 'pname';
-    const b = document.createElement('b');
-    b.textContent = `Panel ${i + 1} — ${panel.name}`;
-    const span = document.createElement('span');
-    span.textContent = panel.img ? `zoom ${panel.zoom.toFixed(2)}×` : 'no photo yet';
-    name.appendChild(b);
-    name.appendChild(span);
-    row.appendChild(name);
+    name.textContent = `Panel ${i + 1} — ${p.img >= 0 ? (state.names[p.img] || 'asset') : 'empty'}`;
     const zoom = document.createElement('input');
-    zoom.type = 'range';
-    zoom.min = '1';
-    zoom.max = '3';
-    zoom.step = '0.05';
-    zoom.value = String(panel.zoom);
-    zoom.setAttribute('aria-label', `Zoom panel ${i + 1}`);
-    zoom.addEventListener('input', (e) => {
-      panel.zoom = Number(e.target.value);
-      render();
-    });
-    zoom.addEventListener('click', (e) => e.stopPropagation());
-    row.appendChild(zoom);
+    zoom.type = 'range'; zoom.min = '100'; zoom.max = '400'; zoom.value = String(Math.round(p.zoom * 100));
+    zoom.addEventListener('input', () => { p.zoom = Number(zoom.value) / 100; render(); });
     const clear = document.createElement('button');
-    clear.type = 'button';
     clear.textContent = 'Clear';
-    clear.addEventListener('click', (e) => {
-      e.stopPropagation();
-      clearPanel(i);
-    });
-    row.appendChild(clear);
-    panelsEl.appendChild(row);
+    clear.addEventListener('click', () => { p.img = -1; render(); buildPanelList(); });
+    row.append(thumb, name, zoom, clear);
+    row.addEventListener('click', () => { state.selected = i; render(); });
+    list.appendChild(row);
   });
 }
 
-function clearPanel(i) {
-  const panel = state.panels[i];
-  if (panel.objectURL) URL.revokeObjectURL(panel.objectURL);
-  state.panels[i] = emptyPanel();
+function setLayout(layout) {
+  state.layout = layout;
+  state.panels = defaultPanels(layout);
+  state.selected = 0;
+  applyAssetParam();
   render();
+  buildPanelList();
 }
 
-function setPanelPhoto(i, img, src, name, objectURL = null) {
-  const panel = state.panels[i];
-  if (panel.objectURL) URL.revokeObjectURL(panel.objectURL);
-  panel.img = img;
-  panel.src = src;
-  panel.name = name;
-  panel.objectURL = objectURL;
-  panel.zoom = 1;
-  panel.ox = 0;
-  panel.oy = 0;
-  state.selected = i;
-  render();
-}
-
-async function setSample(key) {
-  const sample = SAMPLES[key];
-  if (!sample) return;
-  try {
-    const img = await loadImage(sample.src);
-    setPanelPhoto(state.selected, img, sample.src, sample.name);
-  } catch {
-    status.textContent = `Could not load the ${sample.name} sample.`;
-  }
-}
-
-/** Fills panels with the given files: first the selected panel, then empty ones. */
-async function addFiles(files) {
-  const list = [...files].filter((f) => f.type.startsWith('image/'));
-  if (!list.length) return;
-  for (const file of list) {
-    let target = state.selected;
-    if (state.panels[target].img) {
-      const empty = state.panels.findIndex((p) => !p.img);
-      target = empty === -1 ? (target + 1) % state.panels.length : empty;
-    }
-    const url = URL.createObjectURL(file);
-    try {
-      const img = await loadImage(url);
-      setPanelPhoto(target, img, url, file.name.replace(/\.[^.]+$/, '').slice(0, 24) || 'Photo', url);
-    } catch {
-      URL.revokeObjectURL(url);
-      status.textContent = `Could not read ${file.name}.`;
-    }
-  }
-}
-
-// --- Controls ---------------------------------------------------------------
-
-document.querySelectorAll('[data-layout]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-layout]').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.layout = btn.dataset.layout;
-    resizePanels(state.layout);
-    render();
+// ------------------------------------------------------------------- export
+function exportPNG(w, h) {
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  drawCover(off, {
+    images: state.images,
+    panels: state.panels,
+    layout: state.layout,
+    grade: state.grade,
+    gradeStrength: state.gradeStrength,
+    title: state.title,
+    subtitle: state.subtitle,
+    header: state.header,
+    titleScale: state.titleScale,
   });
-});
-
-document.getElementById('photo').addEventListener('change', (e) => {
-  addFiles(e.target.files);
-  e.target.value = '';
-});
-document.getElementById('sample-boulevard').addEventListener('click', () => setSample('boulevard'));
-document.getElementById('sample-pier').addEventListener('click', () => setSample('pier'));
-
-document.getElementById('title').addEventListener('input', (e) => {
-  state.title = e.target.value;
-  render();
-});
-document.getElementById('subtitle').addEventListener('input', (e) => {
-  state.subtitle = e.target.value;
-  render();
-});
-document.getElementById('header').addEventListener('input', (e) => {
-  state.header = e.target.value;
-  render();
-});
-document.getElementById('title-size').addEventListener('input', (e) => {
-  state.titleSize = Number(e.target.value);
-  render();
-});
-document.getElementById('pos-top').addEventListener('click', (e) => {
-  state.titlePos = 'top';
-  document.getElementById('pos-top').classList.add('active');
-  document.getElementById('pos-bottom').classList.remove('active');
-  render();
-});
-document.getElementById('pos-bottom').addEventListener('click', (e) => {
-  state.titlePos = 'bottom';
-  document.getElementById('pos-bottom').classList.add('active');
-  document.getElementById('pos-top').classList.remove('active');
-  render();
-});
-document.querySelectorAll('[data-color]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-color]').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.titleColor = btn.dataset.color;
-    render();
-  });
-});
-document.querySelectorAll('[data-grade]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-grade]').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    state.grade = btn.dataset.grade;
-    render();
-  });
-});
-document.getElementById('grade-strength').addEventListener('input', (e) => {
-  state.gradeStrength = Number(e.target.value);
-  render();
-});
-
-function setExportSize(size) {
-  state.exportSize = size;
-  const [w, h] = size.split('x').map(Number);
-  canvas.width = w;
-  canvas.height = h;
-  render();
-}
-document.querySelectorAll('[data-size]').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('[data-size]').forEach((b) => b.classList.remove('active'));
-    btn.classList.add('active');
-    setExportSize(btn.dataset.size);
-  });
-});
-
-document.getElementById('export').addEventListener('click', () => {
-  const [w, h] = state.exportSize.split('x').map(Number);
-  const out = document.createElement('canvas');
-  out.width = w;
-  out.height = h;
-  drawCover(out, state, { hints: false });
-  out.toBlob((blob) => {
-    if (!blob) {
-      status.textContent = 'Export failed.';
-      return;
-    }
+  off.toBlob((blob) => {
+    if (!blob) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `vice-cover-${state.exportSize}.png`;
+    a.download = `cover-${w}x${h}.png`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-    status.textContent = `Saved vice-cover-${state.exportSize}.png`;
   }, 'image/png');
-});
+}
 
-// --- Canvas interaction: click to select, drag to pan, wheel to zoom --------
-
+// ------------------------------------------------------------------ pointer
 function canvasPoint(e) {
-  const rect = canvas.getBoundingClientRect();
+  const r = canvas.getBoundingClientRect();
   return {
-    x: (e.clientX - rect.left) * (canvas.width / rect.width),
-    y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    x: (e.clientX - r.left) * (canvas.width / r.width),
+    y: (e.clientY - r.top) * (canvas.height / r.height),
   };
+}
+
+function hitPanel(pt) {
+  const { hero, rects } = layoutRects(state.layout, canvas.width, canvas.height);
+  const order = rects.map((_, i) => i).sort((a, b) => (a === hero ? -1 : b === hero ? 1 : b - a));
+  for (const i of order) {
+    const r = rects[i];
+    if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) return i;
+  }
+  return -1;
 }
 
 let drag = null;
 canvas.addEventListener('pointerdown', (e) => {
-  const p = canvasPoint(e);
-  const i = hitPanel(state.layout, canvas.width, canvas.height, p.x, p.y);
-  if (i === -1) return;
+  const pt = canvasPoint(e);
+  const i = hitPanel(pt);
+  if (i < 0) return;
   state.selected = i;
+  const p = state.panels[i];
+  const { rects } = layoutRects(state.layout, canvas.width, canvas.height);
+  drag = { i, x: pt.x, y: pt.y, ox: p.ox, oy: p.oy, w: rects[i].w, h: rects[i].h };
   canvas.setPointerCapture(e.pointerId);
-  drag = { i, x: p.x, y: p.y, moved: false };
   render();
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!drag) return;
-  const p = canvasPoint(e);
-  const dx = p.x - drag.x;
-  const dy = p.y - drag.y;
-  if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
-  const panel = state.panels[drag.i];
-  if (!panel.img) return;
-  const rects = layoutRects(state.layout, canvas.width, canvas.height);
-  const r = rects[drag.i];
-  const s0 = Math.max(r.w / panel.img.naturalWidth, r.h / panel.img.naturalHeight);
-  const s = s0 * panel.zoom;
-  const dw = panel.img.naturalWidth * s;
-  const dh = panel.img.naturalHeight * s;
-  if (dw > r.w) panel.ox = Math.max(-1, Math.min(1, panel.ox + dx / ((dw - r.w) / 2)));
-  if (dh > r.h) panel.oy = Math.max(-1, Math.min(1, panel.oy + dy / ((dh - r.h) / 2)));
-  drag.x = p.x;
-  drag.y = p.y;
+  const pt = canvasPoint(e);
+  const p = state.panels[drag.i];
+  const dx = pt.x - drag.x, dy = pt.y - drag.y;
+  p.ox = Math.max(0, Math.min(1, drag.ox - dx / (drag.w * p.zoom)));
+  p.oy = Math.max(0, Math.min(1, drag.oy - dy / (drag.h * p.zoom)));
   render();
 });
-canvas.addEventListener('pointerup', () => {
-  drag = null;
-});
+canvas.addEventListener('pointerup', () => { drag = null; });
 canvas.addEventListener('wheel', (e) => {
+  const pt = canvasPoint(e);
+  const i = hitPanel(pt);
+  if (i < 0) return;
   e.preventDefault();
-  const p = canvasPoint(e);
-  const i = hitPanel(state.layout, canvas.width, canvas.height, p.x, p.y);
-  if (i === -1) return;
-  const panel = state.panels[i];
-  if (!panel.img) return;
+  const p = state.panels[i];
+  p.zoom = Math.max(1, Math.min(4, p.zoom * Math.exp(-e.deltaY * 0.001)));
   state.selected = i;
-  panel.zoom = Math.max(1, Math.min(3, panel.zoom * Math.exp(-e.deltaY * 0.0012)));
   render();
+  buildPanelList();
 }, { passive: false });
 
+canvas.addEventListener('dblclick', (e) => {
+  const pt = canvasPoint(e);
+  const i = hitPanel(pt);
+  if (i < 0) return;
+  state.selected = i;
+  reframeToFace(i);
+});
+
+// -------------------------------------------------------------------- upload
+function addUpload(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    state.images.push(img);
+    state.names.push(file.name.replace(/\.[^.]+$/, ''));
+    buildCast();
+    render();
+  };
+  img.src = url;
+}
+
+$('uploadBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', (e) => {
+  for (const f of e.target.files) addUpload(f);
+  e.target.value = '';
+});
 canvas.addEventListener('dragover', (e) => e.preventDefault());
 canvas.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  for (const f of e.dataTransfer.files) addUpload(f);
 });
 
-// --- Startup -----------------------------------------------------------------
-
+// --------------------------------------------------------------------- init
 async function init() {
-  // Load the vendored display font before the first paint so the caption uses it.
-  try {
-    await document.fonts.load('100px Anton');
-  } catch { /* falls back to sans-serif */ }
-  const params = new URLSearchParams(location.search);
-  if (params.get('shot')) {
-    await runShot(params.get('shot'), params, async (scene) => {
-      if (scene.layout) {
-        state.layout = scene.layout;
-        resizePanels(state.layout);
-        document.querySelectorAll('[data-layout]').forEach((b) =>
-          b.classList.toggle('active', b.dataset.layout === state.layout));
-      }
-      if (scene.grade) {
-        state.grade = scene.grade;
-        document.querySelectorAll('[data-grade]').forEach((b) =>
-          b.classList.toggle('active', b.dataset.grade === state.grade));
-      }
-      if (scene.size) setExportSize(scene.size);
-      if (scene.title !== undefined) {
-        state.title = scene.title;
-        document.getElementById('title').value = scene.title;
-      }
-      if (scene.subtitle !== undefined) {
-        state.subtitle = scene.subtitle;
-        document.getElementById('subtitle').value = scene.subtitle;
-      }
-      if (scene.header !== undefined) {
-        state.header = scene.header;
-        document.getElementById('header').value = scene.header;
-      }
-      // Fill the panels with the scene's photos, in order.
-      for (let i = 0; i < scene.photos.length && i < state.panels.length; i++) {
-        const key = scene.photos[i];
-        const sample = SAMPLES[key];
-        if (!sample) continue;
-        try {
-          const img = await loadImage(sample.src);
-          const panel = state.panels[i];
-          panel.img = img;
-          panel.src = sample.src;
-          panel.name = sample.name;
-          const crop = state.layout === 'poster' ? POSTER_CROPS[i] : null;
-          panel.zoom = scene.zoom ?? (crop ? crop.zoom : 1);
-          panel.ox = scene.ox ?? (crop ? crop.ox : 0);
-          panel.oy = scene.oy ?? (crop ? crop.oy : 0);
-        } catch { /* panel stays empty */ }
-      }
-      state.selected = -1;
-      render();
-    });
-    return;
+  // Cover-only mode (for screenshots) hides the editor chrome.
+  const shot = params.get('shot');
+  if (shot === 'cover') document.body.classList.add('cover-only');
+  const size = params.get('size');
+  if (size) {
+    const [w, h] = size.split('x').map(Number);
+    if (Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0) {
+      canvas.width = w; canvas.height = h;
+    }
   }
-  // Default scene: a full cover from the two samples, so the app opens ready.
-  // The poster reuses them across its 7 panels with different crops.
-  const defaults = state.layout === 'poster'
-    ? ['pier', 'boulevard', 'pier', 'boulevard', 'pier', 'boulevard', 'pier']
-    : ['pier', 'boulevard', 'pier'];
-  for (let i = 0; i < defaults.length && i < state.panels.length; i++) {
-    const sample = SAMPLES[defaults[i]];
-    try {
-      const img = await loadImage(sample.src);
-      const panel = state.panels[i];
-      panel.img = img;
-      panel.src = sample.src;
-      panel.name = sample.name;
-      if (state.layout === 'poster' && POSTER_CROPS[i]) Object.assign(panel, POSTER_CROPS[i]);
-    } catch { /* panel stays empty */ }
+
+  await loadAssets();
+  try { await document.fonts.load('400 100px Anton'); await document.fonts.ready; } catch (e) { /* Anton missing — fallback font */ }
+
+  state.panels = defaultPanels(state.layout);
+  applyAssetParam();
+
+  buildButtons($('layouts'), LAYOUT_NAMES, state.layout, setLayout);
+  buildButtons($('grades'), GRADE_NAMES, state.grade, (g) => { state.grade = g; render(); });
+  const ex = $('exports');
+  ex.innerHTML = '';
+  for (const [w, h] of EXPORT_SIZES) {
+    const b = document.createElement('button');
+    b.textContent = `${w} × ${h}`;
+    b.addEventListener('click', () => exportPNG(w, h));
+    ex.appendChild(b);
   }
+  buildCast();
+  buildPanelList();
+
+  $('headerInput').value = state.header;
+  $('titleInput').value = state.title;
+  $('subtitleInput').value = state.subtitle;
+  $('titleSize').value = String(Math.round(state.titleScale * 100));
+  $('titleSizeVal').textContent = `${Math.round(state.titleScale * 100)}%`;
+  $('gradeStrength').value = String(Math.round(state.gradeStrength * 100));
+  $('gradeStrengthVal').textContent = `${Math.round(state.gradeStrength * 100)}%`;
+
+  $('headerInput').addEventListener('input', (e) => { state.header = e.target.value; render(); });
+  $('titleInput').addEventListener('input', (e) => { state.title = e.target.value; render(); });
+  $('subtitleInput').addEventListener('input', (e) => { state.subtitle = e.target.value; render(); });
+  $('titleSize').addEventListener('input', (e) => {
+    state.titleScale = Number(e.target.value) / 100;
+    $('titleSizeVal').textContent = `${e.target.value}%`;
+    render();
+  });
+  $('gradeStrength').addEventListener('input', (e) => {
+    state.gradeStrength = Number(e.target.value) / 100;
+    $('gradeStrengthVal').textContent = `${e.target.value}%`;
+    render();
+  });
+
   render();
+  window.__coverReady = true;
 }
 
-init();
+init().catch((e) => { window.__coverError = String(e); });

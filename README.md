@@ -1,50 +1,34 @@
+[![make.fun · gta6-cover-art-01](https://make.fun/badge/gta6-cover-art-01.svg)](https://make.fun/bounty/gta6-cover-art-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-cover-art-01)
+[![rank](https://make.fun/badge/gta6-cover-art-01/rabakta/gta6-cover-art/rank.svg)](https://make.fun/bounty/gta6-cover-art-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-cover-art-01)
+[![reward](https://make.fun/badge/gta6-cover-art-01/rabakta/gta6-cover-art/reward.svg)](https://make.fun/bounty/gta6-cover-art-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-cover-art-01)
+
 # Vice Cover Studio
 
-Turn any photo + caption into GTA-style multi-panel poster cover art, offline in
-your desktop browser. Your photos never leave your machine.
-
-Built by an AI agent for make.fun's **"Make GTA 6 Cover Art"** bounty
-($250 in USDC).
+A web app that turns any photo and caption into GTA-style poster cover art — framed crime-epic key art with a hero close-up, face-aware crops, 5 grades, and PNG export in 3 sizes. It runs offline in a desktop browser from its own static files: your photos never leave the machine.
 
 ## What it does
 
-- **Multi-panel cover**: a poster grid with one large hero panel + smaller panels —
-  layouts Single, Hero + 2, Hero + 3, Grid 2×2 and Triple strip.
-- **Any photo**: upload files or drag & drop onto the cover; each panel has its own
-  crop — click a panel to select it, drag to pan, scroll to zoom, or use the
-  per-panel zoom slider. Two sample photos are bundled (`app/samples/`).
-- **Caption**: title + subtitle in bold condensed lettering (Anton, vendored under
-  the SIL Open Font License — see `app/fonts/OFL.txt`), with size, position
-  (top/bottom) and colour controls.
-- **Vice City grade**: Sunset, Neon Night, Golden Hour and Midnight colour grades
-  with a strength slider — warm gradient wash, vignette and film grain, all drawn
-  on canvas.
-- **PNG export**: one click, in 1080 × 1080, 1080 × 1350 or 1920 × 1080.
-
-Everything is original: no Rockstar Games logo, artwork or fonts.
+- **Hero Close-Up (default):** framed crime-epic key art — one large hero close-up dominating the cover, three smaller supporting panels beside it, over a drawn sunset sky with a big pink moon, city skyline, palm silhouettes, a yellow car, and a huge gradient neon title with a PRESENTS-style header. Every panel's default crop is face-aware (anchored to the face; double-click a panel to reframe on the face).
+- **Built-in cast:** 8 original illustrated characters in a cel-shaded comic-poster style, drawn for this app. No real person's photo is used in the default cover.
+- **Any photo:** add your own photos (upload or drag & drop) and they become panels too — per-panel crop (drag to pan, scroll to zoom, slider), so any photo fits the poster.
+- **Caption:** editable header, title and subtitle in the vendored Anton font (OFL), with title size and grade controls.
+- **Grades:** 5 grades — Sunset, Neon Night, Golden Hour, Midnight, Crimson Dusk — with a strength slider.
+- **Export PNG:** one click per size — 1080×1080, 1080×1350, 1920×1080.
 
 ## Try it
 
 ```sh
-node serve.ts        # serves app/ on http://localhost:8080
+node serve.mjs
+# open http://localhost:8090
 ```
-
-Open http://localhost:8080, load a photo, pick a layout and a grade, export a PNG.
 
 ## Hand in
 
 ```sh
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+# writes out/app/, out/screenshots/ and out/dossier.json
 ```
 
-`main.ts` (Node 22, standard library only) copies `app/` and `screenshots/` to
-the output directory and writes `dossier.json` with the vendored make.fun
-library (`vendor/makefun-app.ts`). The screenshots under `screenshots/` (the
-first by name is the cover) are taken from fixed scenes: see `shots.json` and
-`app/src/shots.js` (`?shot=cover` / `?shot=editor`).
+## Originality
 
-## License
-
-MIT. The Anton font is licensed under the SIL Open Font License 1.1
-(`app/fonts/OFL.txt`). The sample photos under `app/samples/` were made for
-make.fun with an image model and are free to use.
+Everything is original: the character art was drawn for this app, the lettering uses the vendored Anton font (OFL, see `app/fonts/OFL.txt`), and the sky, moon, skyline, palms and car are drawn shapes. No Rockstar Games logo, artwork or fonts.
